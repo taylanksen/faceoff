@@ -1,7 +1,169 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101426">
+  <title>Webcam Mirror</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101426; --panel:#191f36; --line:#303957; --text:#f4f6ff; --muted:#aab3d1; --accent:#9b8cff; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(ellipse at top, #25234b 0, var(--bg) 55%); color:var(--text); font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+    main { width:min(1100px, 100% - 32px); margin:0 auto; padding:36px 0 28px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:22px; }
+    .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.16em; font-size:.75rem; font-weight:750; }
+    h1 { margin:4px 0 0; font-size:clamp(1.8rem,4vw,2.7rem); letter-spacing:-.04em; }
+    .status { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:.9rem; }
+    .dot { width:9px; height:9px; border-radius:50%; background:#707891; }
+    .dot.on { background:#5ee0a0; box-shadow:0 0 12px #5ee0a077; }
+    .viewer { overflow:hidden; position:relative; background:#080b14; border:1px solid var(--line); border-radius:22px; box-shadow:0 22px 70px #0005; aspect-ratio:16/9; display:grid; place-items:center; }
+    video { display:block; width:100%; height:100%; object-fit:contain; transform:scaleX(-1); }
+    .placeholder { padding:24px; text-align:center; color:var(--muted); max-width:420px; }
+    .camera-icon { font-size:2.8rem; margin-bottom:8px; }
+    .controls { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:18px 0; }
+    button, select { min-height:44px; border-radius:12px; border:1px solid var(--line); padding:0 15px; font:inherit; color:var(--text); background:var(--panel); }
+    button { cursor:pointer; font-weight:650; }
+    button.primary { background:var(--accent); border-color:transparent; color:#15122c; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    select { flex:1; min-width:190px; max-width:360px; }
+    .hint { color:var(--muted); font-size:.88rem; margin-left:auto; }
+    .notice { border:1px solid var(--line); background:#ffffff06; padding:14px 16px; border-radius:14px; color:var(--muted); font-size:.9rem; }
+    .notice strong { color:var(--text); }
+    @media (max-width:600px) { main { padding-top:24px; } header { align-items:flex-start; flex-direction:column; } .viewer { aspect-ratio:4/3; } .hint { width:100%; margin-left:0; } }
+  </style>
+</head>
 <body>
-  I am the best faceoff app ever!
+  <main>
+    <header>
+      <div>
+        <div class="eyebrow">Camera tools · starter app</div>
+        <h1>Webcam Mirror</h1>
+      </div>
+      <div class="status" aria-live="polite"><span id="statusDot" class="dot"></span><span id="statusText">Camera is off</span></div>
+    </header>
+
+    <section class="viewer" aria-label="Mirrored webcam preview">
+      <div id="placeholder" class="placeholder">
+        <div class="camera-icon" aria-hidden="true">◎</div>
+        <strong>Your mirror is ready</strong>
+        <div>Start the camera to see a live, horizontally mirrored preview.</div>
+      </div>
+      <video id="video" autoplay playsinline muted hidden></video>
+    </section>
+
+    <div class="controls">
+      <button id="startButton" class="primary">Start camera</button>
+      <button id="stopButton" disabled>Stop camera</button>
+      <select id="cameraSelect" aria-label="Choose camera" disabled>
+        <option value="">Default camera</option>
+      </select>
+      <span class="hint">Video stays in your browser.</span>
+    </div>
+
+    <div id="message" class="notice" role="status">
+      <strong>Privacy:</strong> this page requests camera access only after you press Start. The preview is not uploaded or recorded.
+    </div>
+  </main>
+
+  <script>
+    // Keep the camera stream in one place so it can be stopped cleanly.
+    const video = document.querySelector("#video");
+    const placeholder = document.querySelector("#placeholder");
+    const startButton = document.querySelector("#startButton");
+    const stopButton = document.querySelector("#stopButton");
+    const cameraSelect = document.querySelector("#cameraSelect");
+    const statusDot = document.querySelector("#statusDot");
+    const statusText = document.querySelector("#statusText");
+    const message = document.querySelector("#message");
+
+    let stream = null;
+
+    function setStatus(isOn, text) {
+      statusDot.classList.toggle("on", isOn);
+      statusText.textContent = text;
+      startButton.disabled = isOn;
+      stopButton.disabled = !isOn;
+    }
+
+    function stopCamera() {
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      stream = null;
+      video.srcObject = null;
+      video.hidden = true;
+      placeholder.hidden = false;
+      cameraSelect.disabled = true;
+      setStatus(false, "Camera is off");
+    }
+
+    async function loadCameras() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter(device => device.kind === "videoinput");
+      const previous = cameraSelect.value;
+      cameraSelect.replaceChildren();
+      cameras.forEach((camera, index) => {
+        const option = document.createElement("option");
+        option.value = camera.deviceId;
+        option.textContent = camera.label || `Camera ${index + 1}`;
+        cameraSelect.append(option);
+      });
+      if (previous && cameras.some(camera => camera.deviceId === previous)) {
+        cameraSelect.value = previous;
+      }
+      cameraSelect.disabled = cameras.length < 2;
+    }
+
+    async function startCamera(deviceId) {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        message.textContent = "Camera access is not available in this browser or context. Use HTTPS (Cloudflare provides it) or localhost.";
+        return;
+      }
+
+      startButton.disabled = true;
+      message.textContent = "Requesting camera permission…";
+
+      try {
+        // Stop the old stream before switching cameras.
+        if (stream) stream.getTracks().forEach(track => track.stop());
+
+        const videoConstraints = deviceId
+          ? { deviceId: { exact: deviceId } }
+          : { facingMode: "user" };
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { ...videoConstraints, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+
+        video.srcObject = stream;
+        video.hidden = false;
+        placeholder.hidden = true;
+        await video.play();
+        await loadCameras();
+        const activeTrack = stream.getVideoTracks()[0];
+        setStatus(true, activeTrack?.label ? `On · ${activeTrack.label}` : "Camera is on");
+        message.textContent = "Camera is running locally in your browser. Nothing is being recorded or uploaded.";
+      } catch (error) {
+        stopCamera();
+        const details = error.name === "NotAllowedError"
+          ? "Camera permission was denied. Allow camera access in your browser settings, then try again."
+          : error.name === "NotFoundError"
+          ? "No camera was found. Connect a webcam and try again."
+          : `Could not start the camera (${error.message || error.name}).`;
+        message.textContent = details;
+      } finally {
+        startButton.disabled = false;
+      }
+    }
+
+    startButton.addEventListener("click", () => startCamera(cameraSelect.value || undefined));
+    stopButton.addEventListener("click", stopCamera);
+    cameraSelect.addEventListener("change", () => startCamera(cameraSelect.value || undefined));
+    window.addEventListener("pagehide", stopCamera);
+
+    // MediaPipe can be added later here. Suggested next step:
+    // 1. Load MediaPipe Tasks Vision.
+    // 2. Run face-landmark detection on video when ready.
+    // 3. Draw landmarks on a canvas positioned over the video.
+  </script>
 </body>
-  
 </html>
